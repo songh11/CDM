@@ -1,0 +1,7 @@
+distributed_type: FSDP
+
+fsdp_config:
+  fsdp_version: 2
+  fsdp_sharding_strategy: FULL_SHARD
+  fsdp_cpu_ram_efficient_loading: False
+

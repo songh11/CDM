@@ -1,0 +1,4 @@
+# Accelerate configuration for DDP (DistributedDataParallel)
+# Usage: accelerate launch --config_file config/accelerate_ddp.yaml scripts/train_nft_sd3_unified.py --config config/nft_unified.py
+
+distributed_type: MULTI_GPU

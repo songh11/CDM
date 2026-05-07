@@ -1,0 +1,7 @@
+{
+  "source": "COCO-2014 Val",
+  "num_samples": 9986,
+  "resolution": 256,
+  "random_seed": 42,
+  "total_available": 40504
+}
