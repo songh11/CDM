@@ -3,7 +3,7 @@ from diffusers import LongCatImagePipeline
 
 device = torch.device('cuda:0')
 
-pipe = LongCatImagePipeline.from_pretrained(pretrained_model_name_or_path="/mnt/fast-backup/liutao/models/meituan-longcat/LongCat-Image", torch_dtype= torch.bfloat16 )
+pipe = LongCatImagePipeline.from_pretrained(pretrained_model_name_or_path="byliutao/Longcat-Image-Turbo", torch_dtype= torch.bfloat16 )
 pipe.to(device, torch.bfloat16)
 prompt = 'a photo of a cat.'
 image = pipe(

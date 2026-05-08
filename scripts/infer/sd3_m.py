@@ -2,12 +2,12 @@ import torch
 from diffusers import StableDiffusion3Pipeline
 
 
-prompt = "A photo of cat."
+prompt = "A photo of cat saying hello."
 
 
 print("Loading teacher model...")
 pipe = StableDiffusion3Pipeline.from_pretrained(
-    "/mnt/new-nas-intern/liutao/distill_log/pipelines/2026.05.02_15.37.20_fsdp2_aee183_sd3 42 /checkpoint-2000", 
+    "byliutao/stable-diffusion-3-medium-turbo", 
 )
 pipe.to("cuda:0", torch.bfloat16)
 
