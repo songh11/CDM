@@ -45,7 +45,7 @@
 
 ## 4-NFE Generation Results
 
-### SD3.5-Medium
+### SD3-Medium
 
 <p align="center">
   <img src="assets/sd3.png" width="90%" alt="SD3.5-Medium 4-NFE generation samples">
