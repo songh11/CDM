@@ -16,8 +16,8 @@
 <a href="https://github.com/byliutao/cdm">
     <img src="https://img.shields.io/badge/GitHub-byliutao%2Fcdm-black?logo=github&logoColor=white" alt="GitHub">
 </a>
-<a href="https://arxiv.org/abs/">
-    <img src="https://img.shields.io/badge/Paper-2509.161-b31b1b?logo=arxiv&logoColor=white" alt="arXiv Paper">
+<a href="http://arxiv.org/abs/2605.06376">
+    <img src="https://img.shields.io/badge/Paper-2605.06376-b31b1b?logo=arxiv&logoColor=white" alt="arXiv Paper">
 </a>
 
 </div>
