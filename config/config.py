@@ -543,6 +543,8 @@ def longcat():
     config.train.loss.cdm.teacher_x0_base = "student_pred"  # "x0_final" | "x0_next" | "student_pred"
 
     config.sample.random_sigma_schedule = True
+    config.random_sigma_min = 0.02          # Minimum sigma value (avoid near-zero instability)
+    config.random_sigma_max = 0.98          # Maximum sigma value for inner points (first sigma is always 1.0)
 
 
     config.train.batch_size = 8
