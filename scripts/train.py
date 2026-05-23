@@ -37,7 +37,8 @@ from cdm.training import (
     LORA_TARGET_MODULES, initialize_models, is_student_lora, is_ft_lora, has_fake_teacher,
     ema_merge_ft_with_student,
     ModelManager, patch_model_for_pipeline,
-    save_fsdp_full_checkpoint, compute_grad_stats, create_lr_lambda, build_fsdp_plugin_if_needed,
+    save_fsdp_full_checkpoint, save_lora_checkpoint, load_lora_checkpoint,
+    compute_grad_stats, create_lr_lambda, build_fsdp_plugin_if_needed,
 )
 
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
@@ -444,12 +445,30 @@ def main(_):
 
     # Resume from checkpoint
     first_epoch, student_step = 0, 0
+    save_lora_only = (
+        is_student_lora(model_mode) and getattr(train_config, "save_lora_only", False)
+    )
     if config.resume_from:
-        accelerator.load_state(config.resume_from)
-        try:
-            student_step = int(os.path.basename(config.resume_from).split("-")[-1])
-        except ValueError:
-            student_step = 0
+        lora_ckpt_dir = os.path.join(config.resume_from, "lora")
+        if save_lora_only and os.path.isdir(lora_ckpt_dir):
+            student_step = load_lora_checkpoint(
+                accelerator,
+                transformer,
+                config.resume_from,
+                logger,
+                optimizer=optimizer,
+                fake_teacher_optimizer=fake_teacher_optimizer,
+                lr_scheduler=lr_scheduler,
+                fake_teacher_lr_scheduler=fake_teacher_lr_scheduler,
+                student_adapter=getattr(train_config, "lora_student_adapter", "default"),
+                fake_teacher_adapter=getattr(train_config, "lora_fake_teacher_adapter", "fake_teacher"),
+            )
+        else:
+            accelerator.load_state(config.resume_from)
+            try:
+                student_step = int(os.path.basename(config.resume_from).split("-")[-1])
+            except ValueError:
+                student_step = 0
         logger.info(f"Resumed from {config.resume_from}, student_step={student_step}", main_process_only=True)
 
     ema_decay = student_config.ema_decay
@@ -561,14 +580,29 @@ def main(_):
         # ========== Checkpoint Saving ==========
         if epoch % config.save_freq == 0 and epoch > 0:
             checkpoint_save_path = os.path.join(checkpoint_dir, f"checkpoint-{student_step}")
-            if accelerator.is_main_process:
-                os.makedirs(checkpoint_save_path, exist_ok=True)
-            accelerator.wait_for_everyone()
-            accelerator.save_state(checkpoint_save_path)
-            if ema is not None and accelerator.is_main_process:
-                torch.save(ema.state_dict(), os.path.join(checkpoint_save_path, "ema_state.pt"))
-            # FSDP: save full (unsharded) state dicts for prepare_student_pipeline compatibility
-            save_fsdp_full_checkpoint(accelerator, transformer, ema, checkpoint_save_path, logger)
+            if save_lora_only:
+                save_lora_checkpoint(
+                    accelerator,
+                    transformer,
+                    checkpoint_save_path,
+                    logger,
+                    ema=ema,
+                    optimizer=optimizer,
+                    fake_teacher_optimizer=fake_teacher_optimizer,
+                    lr_scheduler=lr_scheduler,
+                    fake_teacher_lr_scheduler=fake_teacher_lr_scheduler,
+                    student_step=student_step,
+                    student_adapter=getattr(train_config, "lora_student_adapter", "default"),
+                    fake_teacher_adapter=getattr(train_config, "lora_fake_teacher_adapter", "fake_teacher"),
+                )
+            else:
+                if accelerator.is_main_process:
+                    os.makedirs(checkpoint_save_path, exist_ok=True)
+                accelerator.wait_for_everyone()
+                accelerator.save_state(checkpoint_save_path)
+                if ema is not None and accelerator.is_main_process:
+                    torch.save(ema.state_dict(), os.path.join(checkpoint_save_path, "ema_state.pt"))
+                save_fsdp_full_checkpoint(accelerator, transformer, ema, checkpoint_save_path, logger)
             if accelerator.is_main_process:
                 logger.info(f"Saved checkpoint to {checkpoint_save_path}")
 
@@ -1077,14 +1111,29 @@ def main(_):
     final_checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint-{student_step}")
     already_saved = os.path.exists(final_checkpoint_path)
     if not already_saved:
-        if accelerator.is_main_process:
-            os.makedirs(final_checkpoint_path, exist_ok=True)
-        accelerator.wait_for_everyone()
-        accelerator.save_state(final_checkpoint_path)
-        if ema is not None and accelerator.is_main_process:
-            torch.save(ema.state_dict(), os.path.join(final_checkpoint_path, "ema_state.pt"))
-        # FSDP: save full (unsharded) state dicts for prepare_student_pipeline compatibility
-        save_fsdp_full_checkpoint(accelerator, transformer, ema, final_checkpoint_path, logger)
+        if save_lora_only:
+            save_lora_checkpoint(
+                accelerator,
+                transformer,
+                final_checkpoint_path,
+                logger,
+                ema=ema,
+                optimizer=optimizer,
+                fake_teacher_optimizer=fake_teacher_optimizer,
+                lr_scheduler=lr_scheduler,
+                fake_teacher_lr_scheduler=fake_teacher_lr_scheduler,
+                student_step=student_step,
+                student_adapter=getattr(train_config, "lora_student_adapter", "default"),
+                fake_teacher_adapter=getattr(train_config, "lora_fake_teacher_adapter", "fake_teacher"),
+            )
+        else:
+            if accelerator.is_main_process:
+                os.makedirs(final_checkpoint_path, exist_ok=True)
+            accelerator.wait_for_everyone()
+            accelerator.save_state(final_checkpoint_path)
+            if ema is not None and accelerator.is_main_process:
+                torch.save(ema.state_dict(), os.path.join(final_checkpoint_path, "ema_state.pt"))
+            save_fsdp_full_checkpoint(accelerator, transformer, ema, final_checkpoint_path, logger)
         if accelerator.is_main_process:
             logger.info(f"Saved final checkpoint to {final_checkpoint_path}")
     else:

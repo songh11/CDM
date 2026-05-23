@@ -174,19 +174,44 @@ def discover_checkpoints(experiment_dir, checkpoint_steps=None):
 
 # ==================== Weight Loading ====================
 
+def _student_lora_adapter_dir(checkpoint_path):
+    """Return PEFT student adapter directory if this is a LoRA-only checkpoint."""
+    for subpath in (
+        os.path.join(checkpoint_path, "lora", "default"),
+        os.path.join(checkpoint_path, "lora", "student"),
+    ):
+        adapter_file = os.path.join(subpath, "adapter_model.safetensors")
+        if os.path.isfile(adapter_file) or os.path.isfile(
+            os.path.join(subpath, "adapter_model.bin")
+        ):
+            return subpath
+    return None
+
+
 def load_checkpoint_state_dict(checkpoint_path):
     """Load model state dict from a checkpoint directory.
 
-    Supports both DDP and FSDP checkpoints:
-      - **FSDP**: Looks for ``transformer_full_state_dict.safetensors`` first.
-        This file is saved by ``save_fsdp_full_checkpoint()`` during training
-        and contains the complete (unsharded) transformer weights.
-      - **DDP**: Falls back to the standard Accelerator ``save_state()``
-        convention (``model_*/*.safetensors`` or ``pytorch_model_*/*.bin``).
+    Supports:
+      - **LoRA-only** (``lora/default/adapter_model.safetensors`` from ``save_lora_checkpoint``)
+      - **FSDP**: ``transformer_full_state_dict.safetensors``
+      - **DDP full**: ``model_*/*.safetensors`` or ``pytorch_model_*/*.bin``
 
     Returns:
         state_dict: dict mapping parameter names to CPU tensors.
     """
+    lora_adapter_dir = _student_lora_adapter_dir(checkpoint_path)
+    if lora_adapter_dir is not None:
+        adapter_safetensors = os.path.join(lora_adapter_dir, "adapter_model.safetensors")
+        adapter_bin = os.path.join(lora_adapter_dir, "adapter_model.bin")
+        if os.path.isfile(adapter_safetensors):
+            state_dict = safetensors.torch.load_file(adapter_safetensors, device="cpu")
+            logger.info(f"  Loaded LoRA adapter weights from {adapter_safetensors}")
+            return state_dict
+        state_dict = torch.load(adapter_bin, map_location="cpu", weights_only=True)
+        logger.info(f"  Loaded LoRA adapter weights from {adapter_bin}")
+        return state_dict
+
+    # Legacy / full checkpoints below
     # Priority 1: FSDP full state_dict (saved by save_fsdp_full_checkpoint)
     fsdp_full_path = os.path.join(checkpoint_path, "transformer_full_state_dict.safetensors")
     if os.path.exists(fsdp_full_path):
@@ -333,28 +358,37 @@ def build_student_pipeline_dir(
     logger.info(f"Loading base pipeline from: {pretrained_path}")
     pipeline = model_adapter.load_pipeline(pretrained_path)
 
-    # Load checkpoint weights
-    checkpoint_state_dict = load_checkpoint_state_dict(checkpoint_path)
-
     transformer = pipeline.transformer
+    lora_adapter_dir = _student_lora_adapter_dir(checkpoint_path) if student_use_lora else None
 
     if student_use_lora:
-        logger.info(f"  Applying LoRA (rank={lora_rank}, alpha={lora_alpha}) and loading weights...")
-        lora_config = LoraConfig(
-            r=lora_rank,
-            lora_alpha=lora_alpha,
-            init_lora_weights="gaussian",
-            target_modules=lora_target_modules,
-        )
-        transformer = get_peft_model(transformer, lora_config)
-        transformer.load_state_dict(checkpoint_state_dict, strict=False)
+        if lora_adapter_dir is not None:
+            logger.info(f"  Loading student LoRA adapter from {lora_adapter_dir} ...")
+            transformer = PeftModel.from_pretrained(
+                transformer,
+                lora_adapter_dir,
+                adapter_name="default",
+                is_trainable=False,
+            )
+        else:
+            checkpoint_state_dict = load_checkpoint_state_dict(checkpoint_path)
+            logger.info(f"  Applying LoRA (rank={lora_rank}, alpha={lora_alpha}) and loading weights...")
+            lora_config = LoraConfig(
+                r=lora_rank,
+                lora_alpha=lora_alpha,
+                init_lora_weights="gaussian",
+                target_modules=lora_target_modules,
+            )
+            transformer = get_peft_model(transformer, lora_config)
+            transformer.load_state_dict(checkpoint_state_dict, strict=False)
 
         # Apply EMA weights BEFORE merge_and_unload, while LoRA params still have requires_grad=True
         ema_applied = _apply_ema_weights(transformer, checkpoint_path, use_ema)
 
-        logger.info("  Merging LoRA weights into base model...")
+        logger.info("  Merging LoRA weights into base model (diffusers-compatible full transformer)...")
         transformer = transformer.merge_and_unload()
     else:
+        checkpoint_state_dict = load_checkpoint_state_dict(checkpoint_path)
         logger.info("  Loading full fine-tuning weights...")
         transformer.load_state_dict(checkpoint_state_dict, strict=False)
 
@@ -394,7 +428,7 @@ def build_student_pipeline_dir(
     logger.info(f"  Pipeline saved successfully. Metadata: {metadata_path}")
 
     # Cleanup
-    del pipeline, transformer, checkpoint_state_dict
+    del pipeline, transformer
     torch.cuda.empty_cache()
 
 

@@ -55,6 +55,11 @@ def _get_training_params():
     config.batch_size = 16  # Unified batch size for sampling, student training, and fake teacher training
     config.gradient_accumulation_steps = 1
     config.max_grad_norm = 1.0
+    # When True (LoRA + DDP only), checkpoints store adapter weights under lora/ instead of
+    # accelerator.save_state() full model shards.
+    config.save_lora_only = False
+    config.lora_student_adapter = "default"
+    config.lora_fake_teacher_adapter = "fake_teacher"
     # Common optimizer settings (shared by student and fake teacher)
     config.adam_beta1 = 0.9
     config.adam_beta2 = 0.999
@@ -560,4 +565,67 @@ def longcat():
 
     config.run_name = _generate_run_name(config)
 
+    return config
+
+
+def longcat_4x4090_lora():
+    """LongCat CDM distillation for 4x 48GB GPUs: DDP + dual LoRA adapters, LoRA-only checkpoints.
+
+    Launch:
+        export NPROC_PER_NODE=4 NNODES=1
+        accelerate launch --config_file config/accelerate_ddp.yaml \\
+            --num_processes 4 -m scripts.train \\
+            --config config/config.py:longcat_4x4090_lora
+
+    See docs/training_longcat_4x4090_lora.md for details and diffusers export.
+    """
+    config = _create_unified_config(
+        base_model="longcat",
+        sample_dataset="mixed_200k",
+        eval_dataset="mixed_200k",
+        experiment_name="4x4090_lora",
+    )
+
+    # LoRA (student + fake teacher must both be True)
+    config.train.student.use_lora = True
+    config.train.fake_teacher.use_lora = True
+    config.train.save_lora_only = True
+    config.train.student.lora_rank = 64
+    config.train.student.lora_alpha = 128
+    config.train.fake_teacher.lora_rank = 64
+    config.train.fake_teacher.lora_alpha = 128
+    config.train.student.lora_include_ff = True
+    config.train.fake_teacher.lora_include_ff = True
+
+    config.train.student.learning_rate = 2e-5
+    config.train.fake_teacher.learning_rate = 2e-5
+
+    # 4 GPUs: global batch 4 * 2 * 4 = 32 samples/epoch when num_batches_per_epoch=4
+    config.train.batch_size = 2
+    config.sample.num_batches_per_epoch = 4
+
+    config.eval.eval_batch_size = 2
+    config.eval.max_eval_samples = 8
+    config.eval.fake_teacher_viz.enabled = False
+    config.eval.distillation_enabled = False
+    config.eval_freq = 200
+    config.eval.skip_first_eval = True
+
+    # Faster, stable schedule for 4-GPU runs
+    config.sample.random_sigma_schedule = False
+    config.deterministic = False
+    config.allow_tf32 = True
+    config.train.enable_xformers = False
+
+    config.train.student.update_ratio = 2
+    config.num_epochs = 2001
+    config.save_freq = 500
+    config.eval.enable_prompt_rewrite = False
+
+    config.train.loss.cfg.enabled = True
+    config.train.loss.ddm.enabled = True
+    config.train.loss.cdm.enabled = True
+    config.train.share_latent_indices = True
+
+    config.run_name = _generate_run_name(config)
     return config

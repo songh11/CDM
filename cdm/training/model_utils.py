@@ -614,6 +614,123 @@ class ModelManager:
 
 # ==================== Checkpoint & Training Utilities ====================
 
+def save_lora_checkpoint(
+    accelerator,
+    transformer,
+    checkpoint_save_path,
+    logger,
+    ema=None,
+    optimizer=None,
+    fake_teacher_optimizer=None,
+    lr_scheduler=None,
+    fake_teacher_lr_scheduler=None,
+    student_step: int = 0,
+    student_adapter: str = "default",
+    fake_teacher_adapter: str = "fake_teacher",
+) -> None:
+    """Save PEFT adapter weights only (plus optimizer/EMA state for resume).
+
+    Layout::
+        checkpoint-<step>/
+          lora/
+            default/              # student adapter (PEFT format)
+            fake_teacher/         # fake-teacher adapter
+          ema_state.pt              # optional student EMA
+          training_state.pt         # optimizer + scheduler state
+    """
+    from peft import PeftModel
+
+    accelerator.wait_for_everyone()
+    unwrapped = accelerator.unwrap_model(transformer)
+    if not isinstance(unwrapped, PeftModel):
+        raise TypeError(
+            "save_lora_checkpoint expects a PeftModel; got "
+            f"{type(unwrapped).__name__}. Set train.save_lora_only=False for full checkpoints."
+        )
+
+    if accelerator.is_main_process:
+        os.makedirs(checkpoint_save_path, exist_ok=True)
+        lora_dir = os.path.join(checkpoint_save_path, "lora")
+        adapters = [student_adapter]
+        if fake_teacher_adapter not in adapters:
+            adapters.append(fake_teacher_adapter)
+        unwrapped.save_pretrained(lora_dir, selected_adapters=adapters)
+        logger.info(f"Saved LoRA adapters to {lora_dir} (adapters={adapters})", main_process_only=True)
+
+        if ema is not None:
+            torch.save(ema.state_dict(), os.path.join(checkpoint_save_path, "ema_state.pt"))
+
+        training_state = {
+            "student_step": student_step,
+            "optimizer": optimizer.state_dict() if optimizer is not None else None,
+            "fake_teacher_optimizer": (
+                fake_teacher_optimizer.state_dict() if fake_teacher_optimizer is not None else None
+            ),
+            "lr_scheduler": lr_scheduler.state_dict() if lr_scheduler is not None else None,
+            "fake_teacher_lr_scheduler": (
+                fake_teacher_lr_scheduler.state_dict() if fake_teacher_lr_scheduler is not None else None
+            ),
+        }
+        torch.save(training_state, os.path.join(checkpoint_save_path, "training_state.pt"))
+
+    accelerator.wait_for_everyone()
+
+
+def load_lora_checkpoint(
+    accelerator,
+    transformer,
+    checkpoint_path: str,
+    logger,
+    optimizer=None,
+    fake_teacher_optimizer=None,
+    lr_scheduler=None,
+    fake_teacher_lr_scheduler=None,
+    student_adapter: str = "default",
+    fake_teacher_adapter: str = "fake_teacher",
+) -> int:
+    """Load LoRA adapters and training state from a LoRA-only checkpoint directory."""
+    from peft import PeftModel
+
+    unwrapped = accelerator.unwrap_model(transformer)
+    if not isinstance(unwrapped, PeftModel):
+        raise TypeError(f"load_lora_checkpoint expects PeftModel, got {type(unwrapped).__name__}")
+
+    lora_dir = os.path.join(checkpoint_path, "lora")
+    if not os.path.isdir(lora_dir):
+        raise FileNotFoundError(
+            f"LoRA checkpoint not found at {lora_dir}. "
+            f"Expected save_lora_only training checkpoint layout."
+        )
+
+    for adapter_name in (student_adapter, fake_teacher_adapter):
+        adapter_path = os.path.join(lora_dir, adapter_name)
+        if os.path.isdir(adapter_path):
+            unwrapped.load_adapter(adapter_path, adapter_name=adapter_name)
+            logger.info(f"Loaded LoRA adapter '{adapter_name}' from {adapter_path}", main_process_only=True)
+        else:
+            logger.warning(
+                f"LoRA adapter directory missing: {adapter_path}", main_process_only=True
+            )
+
+    training_state_path = os.path.join(checkpoint_path, "training_state.pt")
+    student_step = 0
+    if os.path.isfile(training_state_path):
+        training_state = torch.load(training_state_path, map_location="cpu", weights_only=False)
+        student_step = int(training_state.get("student_step", 0))
+        if optimizer is not None and training_state.get("optimizer") is not None:
+            optimizer.load_state_dict(training_state["optimizer"])
+        if fake_teacher_optimizer is not None and training_state.get("fake_teacher_optimizer") is not None:
+            fake_teacher_optimizer.load_state_dict(training_state["fake_teacher_optimizer"])
+        if lr_scheduler is not None and training_state.get("lr_scheduler") is not None:
+            lr_scheduler.load_state_dict(training_state["lr_scheduler"])
+        if fake_teacher_lr_scheduler is not None and training_state.get("fake_teacher_lr_scheduler") is not None:
+            fake_teacher_lr_scheduler.load_state_dict(training_state["fake_teacher_lr_scheduler"])
+        logger.info(f"Loaded training_state.pt (student_step={student_step})", main_process_only=True)
+
+    accelerator.wait_for_everyone()
+    return student_step
+
+
 def save_fsdp_full_checkpoint(accelerator, transformer, ema, checkpoint_save_path, logger):
     """Save full (unsharded) state dicts for FSDP checkpoints.
 

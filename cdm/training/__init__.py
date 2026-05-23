@@ -26,6 +26,8 @@ from cdm.training.model_utils import (
     ema_merge_ft_with_student,
     LORA_TARGET_MODULES,
     save_fsdp_full_checkpoint,
+    save_lora_checkpoint,
+    load_lora_checkpoint,
     compute_grad_stats,
     create_lr_lambda,
     build_fsdp_plugin_if_needed,
@@ -51,6 +53,8 @@ __all__ = [
     "LORA_TARGET_MODULES",
     # Checkpoint & training utilities
     "save_fsdp_full_checkpoint",
+    "save_lora_checkpoint",
+    "load_lora_checkpoint",
     "compute_grad_stats",
     "create_lr_lambda",
     "build_fsdp_plugin_if_needed",
